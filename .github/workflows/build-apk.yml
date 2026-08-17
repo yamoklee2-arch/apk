@@ -25,7 +25,6 @@ jobs:
         uses: android-actions/setup-android@v3
 
       - name: Find ZIP
-        id: find_zip
         shell: bash
         run: |
           set -e
@@ -64,8 +63,8 @@ jobs:
           unzip -q "$ZIP_FILE" -d "$WORK_DIR"
 
           echo
-          echo "=== EXTRACTED FILES ==="
-          find "$WORK_DIR" -maxdepth 5 -type f | sort | head -300
+          echo "=== EXTRACTED PROJECT FILES ==="
+          find "$WORK_DIR" -maxdepth 6 -type f | sort | head -400
 
       - name: Find Android project root
         shell: bash
@@ -81,15 +80,14 @@ jobs:
           while IFS= read -r SETTINGS_FILE; do
             CANDIDATE="$(dirname "$SETTINGS_FILE")"
 
-            if [ -f "$CANDIDATE/app/build.gradle" ] || \
-               [ -f "$CANDIDATE/app/build.gradle.kts" ]; then
+            if [ -d "$CANDIDATE/app" ] && \
+               { [ -f "$CANDIDATE/build.gradle" ] || \
+                 [ -f "$CANDIDATE/build.gradle.kts" ]; }; then
 
-              if [ -f "$CANDIDATE/gradlew" ]; then
-                PROJECT_ROOT="$CANDIDATE"
-                break
-              fi
-
+              PROJECT_ROOT="$CANDIDATE"
+              break
             fi
+
           done < <(
             find "$WORK_DIR" \
               -type f \
@@ -106,17 +104,8 @@ jobs:
             echo
             echo "ERROR: Android project root not found."
             echo
-            echo "The ZIP must contain an Android source project."
-            echo
-            echo "Expected structure:"
-            echo "  settings.gradle / settings.gradle.kts"
-            echo "  build.gradle / build.gradle.kts"
-            echo "  gradlew"
-            echo "  app/"
-            echo
             echo "=== PROJECT FILES ==="
             find "$WORK_DIR" -type f | sort
-            echo
             exit 1
           fi
 
@@ -134,35 +123,31 @@ jobs:
 
           echo "PROJECT_ROOT=$PROJECT_ROOT" >> "$GITHUB_ENV"
 
-      - name: Verify Gradle project
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.13'
+
+      - name: Verify Android project
         shell: bash
         run: |
           set -e
 
           cd "$PROJECT_ROOT"
 
-          echo "=== VERIFY GRADLE PROJECT ==="
+          echo "=== VERIFY ANDROID PROJECT ==="
           echo "PWD=$(pwd)"
+          echo
 
-          if [ ! -f "gradlew" ]; then
-            echo "ERROR: gradlew not found."
-            exit 1
-          fi
+          test -f settings.gradle.kts -o -f settings.gradle
+          test -d app
 
-          if [ ! -f "settings.gradle" ] && \
-             [ ! -f "settings.gradle.kts" ]; then
-            echo "ERROR: settings.gradle(.kts) not found."
-            exit 1
-          fi
+          echo "settings.gradle(.kts): OK"
+          echo "app/: OK"
+          echo
 
-          if [ ! -d "app" ]; then
-            echo "ERROR: app directory not found."
-            exit 1
-          fi
-
-          chmod +x gradlew
-
-          ./gradlew --version
+          echo "=== GRADLE VERSION ==="
+          gradle --version
 
       - name: Build Debug APK
         shell: bash
@@ -173,10 +158,9 @@ jobs:
 
           echo "=== BUILD DEBUG APK ==="
 
-          ./gradlew assembleDebug --stacktrace
+          gradle assembleDebug --stacktrace
 
       - name: Locate APK
-        id: apk
         shell: bash
         run: |
           set -e
@@ -209,11 +193,12 @@ jobs:
       - name: Build summary
         shell: bash
         run: |
+          echo
           echo "========================================"
           echo "BUILD SUCCESS"
           echo "========================================"
           echo
-          echo "Project:"
+          echo "PROJECT_ROOT:"
           echo "$PROJECT_ROOT"
           echo
           echo "APK:"
