@@ -19,7 +19,7 @@ jobs:
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '17'
+          java-version: "17"
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
@@ -43,7 +43,8 @@ jobs:
           fi
 
           echo "ZIP_FILE=$ZIP_FILE" >> "$GITHUB_ENV"
-          echo "Found ZIP:"
+
+          echo "Found:"
           echo "$ZIP_FILE"
 
       - name: Unzip project
@@ -56,14 +57,9 @@ jobs:
           rm -rf "$WORK_DIR"
           mkdir -p "$WORK_DIR"
 
-          echo "=== UNZIPPING PROJECT ==="
-          echo "ZIP: $ZIP_FILE"
-          echo "DEST: $WORK_DIR"
-
           unzip -q "$ZIP_FILE" -d "$WORK_DIR"
 
-          echo
-          echo "=== EXTRACTED PROJECT FILES ==="
+          echo "=== EXTRACTED FILES ==="
           find "$WORK_DIR" -maxdepth 6 -type f | sort | head -400
 
       - name: Find Android project root
@@ -72,10 +68,9 @@ jobs:
           set -e
 
           WORK_DIR="$RUNNER_TEMP/smartalert-project"
+          PROJECT_ROOT=""
 
           echo "=== SEARCHING ANDROID PROJECT ==="
-
-          PROJECT_ROOT=""
 
           while IFS= read -r SETTINGS_FILE; do
             CANDIDATE="$(dirname "$SETTINGS_FILE")"
@@ -87,65 +82,157 @@ jobs:
               PROJECT_ROOT="$CANDIDATE"
               break
             fi
-
           done < <(
             find "$WORK_DIR" \
               -type f \
-              \( \
-                -name "settings.gradle" \
-                -o \
-                -name "settings.gradle.kts" \
-              \) \
+              \( -name "settings.gradle" -o -name "settings.gradle.kts" \) \
               -not -path "*/build/*" \
               | sort
           )
 
           if [ -z "$PROJECT_ROOT" ]; then
-            echo
             echo "ERROR: Android project root not found."
-            echo
-            echo "=== PROJECT FILES ==="
             find "$WORK_DIR" -type f | sort
             exit 1
           fi
 
-          echo
           echo "=== ANDROID PROJECT ROOT ==="
           echo "$PROJECT_ROOT"
 
-          echo
-          echo "=== PROJECT FILES ==="
-          ls -la "$PROJECT_ROOT"
-
-          echo
-          echo "=== APP DIRECTORY ==="
-          ls -la "$PROJECT_ROOT/app"
-
           echo "PROJECT_ROOT=$PROJECT_ROOT" >> "$GITHUB_ENV"
 
-      - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: '8.13'
-
-      - name: Verify Android project
+      - name: Detect Android Gradle Plugin
         shell: bash
         run: |
           set -e
 
           cd "$PROJECT_ROOT"
 
-          echo "=== VERIFY ANDROID PROJECT ==="
-          echo "PWD=$(pwd)"
+          echo "=== DETECTING AGP VERSION ==="
+
+          AGP_VERSION=""
+
+          if [ -f "gradle/libs.versions.toml" ]; then
+            AGP_VERSION="$(grep -E \
+              '^[[:space:]]*agp[[:space:]]*=' \
+              gradle/libs.versions.toml \
+              | sed -E 's/.*=[[:space:]]*"([^"]+)".*/\1/' \
+              | head -n 1)"
+          fi
+
+          if [ -z "$AGP_VERSION" ]; then
+            AGP_VERSION="$(grep -RhoE \
+              'com\.android\.tools\.build:gradle:[0-9]+\.[0-9]+\.[0-9]+' \
+              . \
+              --include='*.gradle' \
+              --include='*.gradle.kts' \
+              | head -n 1 \
+              | sed -E 's/.*:([0-9]+\.[0-9]+\.[0-9]+)$/\1/')"
+          fi
+
+          if [ -z "$AGP_VERSION" ]; then
+            echo "WARNING: Could not detect AGP version."
+            AGP_VERSION="8.7.3"
+          fi
+
+          echo "Detected AGP: $AGP_VERSION"
+
+          AGP_MAJOR="$(echo "$AGP_VERSION" | cut -d. -f1)"
+          AGP_MINOR="$(echo "$AGP_VERSION" | cut -d. -f2)"
+
+          # Android Gradle Plugin / Gradle compatibility
+          if [ "$AGP_MAJOR" -eq 8 ]; then
+            case "$AGP_MINOR" in
+              0|1)
+                GRADLE_VERSION="8.0"
+                ;;
+              2|3)
+                GRADLE_VERSION="8.4"
+                ;;
+              4)
+                GRADLE_VERSION="8.6"
+                ;;
+              5)
+                GRADLE_VERSION="8.7"
+                ;;
+              6)
+                GRADLE_VERSION="8.7"
+                ;;
+              7)
+                GRADLE_VERSION="8.9"
+                ;;
+              8)
+                GRADLE_VERSION="8.10.2"
+                ;;
+              9)
+                GRADLE_VERSION="8.11.1"
+                ;;
+              10)
+                GRADLE_VERSION="8.11.1"
+                ;;
+              11)
+                GRADLE_VERSION="8.13"
+                ;;
+              12)
+                GRADLE_VERSION="8.13"
+                ;;
+              13)
+                GRADLE_VERSION="8.13"
+                ;;
+              *)
+                GRADLE_VERSION="8.9"
+                ;;
+            esac
+          else
+            GRADLE_VERSION="8.9"
+          fi
+
+          echo "Selected Gradle: $GRADLE_VERSION"
+
+          echo "AGP_VERSION=$AGP_VERSION" >> "$GITHUB_ENV"
+          echo "GRADLE_VERSION=$GRADLE_VERSION" >> "$GITHUB_ENV"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: ${{ env.GRADLE_VERSION }}
+
+      - name: Verify project
+        shell: bash
+        run: |
+          set -e
+
+          cd "$PROJECT_ROOT"
+
+          echo "========================================"
+          echo "ANDROID PROJECT"
+          echo "========================================"
+          echo "Root: $PROJECT_ROOT"
+          echo "AGP: $AGP_VERSION"
+          echo "Gradle: $GRADLE_VERSION"
           echo
 
-          test -f settings.gradle.kts -o -f settings.gradle
           test -d app
 
-          echo "settings.gradle(.kts): OK"
-          echo "app/: OK"
-          echo
+          if [ -f settings.gradle.kts ]; then
+            echo "settings.gradle.kts: OK"
+          elif [ -f settings.gradle ]; then
+            echo "settings.gradle: OK"
+          else
+            echo "ERROR: settings.gradle missing"
+            exit 1
+          fi
 
+          if [ -f build.gradle.kts ]; then
+            echo "build.gradle.kts: OK"
+          elif [ -f build.gradle ]; then
+            echo "build.gradle: OK"
+          else
+            echo "ERROR: build.gradle missing"
+            exit 1
+          fi
+
+          echo
           echo "=== GRADLE VERSION ==="
           gradle --version
 
@@ -156,7 +243,9 @@ jobs:
 
           cd "$PROJECT_ROOT"
 
-          echo "=== BUILD DEBUG APK ==="
+          echo "========================================"
+          echo "BUILD DEBUG APK"
+          echo "========================================"
 
           gradle assembleDebug --stacktrace
 
@@ -179,7 +268,6 @@ jobs:
 
           echo "APK_FILE=$APK_FILE" >> "$GITHUB_ENV"
 
-          echo
           echo "=== APK FOUND ==="
           ls -lh "$APK_FILE"
 
@@ -193,15 +281,11 @@ jobs:
       - name: Build summary
         shell: bash
         run: |
-          echo
           echo "========================================"
           echo "BUILD SUCCESS"
           echo "========================================"
-          echo
-          echo "PROJECT_ROOT:"
-          echo "$PROJECT_ROOT"
-          echo
-          echo "APK:"
-          echo "$APK_FILE"
-          echo
+          echo "Project: $PROJECT_ROOT"
+          echo "AGP: $AGP_VERSION"
+          echo "Gradle: $GRADLE_VERSION"
+          echo "APK: $APK_FILE"
           ls -lh "$APK_FILE"
