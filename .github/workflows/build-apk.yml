@@ -21,30 +21,17 @@ jobs:
         run: |
           set -euo pipefail
 
-          ZIP=""
+          echo "=== ZIP FILES ==="
+          find . -type f -iname "*.zip" -print
 
-          if [ -f "./smartalert-test.zip" ]; then
-            ZIP="./smartalert-test.zip"
-          else
-            ZIP=$(find . -type f -name "smartalert-test.zip" -print -quit || true)
-          fi
+          ZIP=$(find . -type f -iname "*.zip" -print -quit || true)
 
           if [ -z "$ZIP" ]; then
-            while IFS= read -r -d '' candidate; do
-              if unzip -l "$candidate" | grep -qE '(^|/)app/build\.gradle\.kts'; then
-                ZIP="$candidate"
-                break
-              fi
-            done < <(find . -type f -name "*.zip" -print0)
-          fi
-
-          if [ -z "$ZIP" ]; then
-            echo "::error::SmartAlert project ZIP not found."
-            find . -type f -name "*.zip" -print || true
+            echo "::error::No ZIP file found in repository."
             exit 1
           fi
 
-          echo "ZIP=$ZIP"
+          echo "Found ZIP: $ZIP"
           echo "zip_path=$ZIP" >> "$GITHUB_OUTPUT"
 
       - name: Unzip project
@@ -58,7 +45,7 @@ jobs:
           unzip -q "${{ steps.find_zip.outputs.zip_path }}" \
             -d "$RUNNER_TEMP/smartalert-project"
 
-          echo "=== ZIP CONTENT ==="
+          echo "=== UNZIPPED PROJECT ==="
           find "$RUNNER_TEMP/smartalert-project" \
             -maxdepth 5 \
             -type f \
@@ -71,11 +58,12 @@ jobs:
           set -euo pipefail
 
           BASE="$RUNNER_TEMP/smartalert-project"
-
           PROJECT_ROOT=""
 
-          while IFS= read -r -d '' APP_GRADLE; do
-            PROJECT_ROOT="$(dirname "$(dirname "$APP_GRADLE")")"
+          echo "=== SEARCHING ANDROID PROJECT ==="
+
+          while IFS= read -r -d '' FILE; do
+            PROJECT_ROOT="$(dirname "$(dirname "$FILE")")"
             break
           done < <(
             find "$BASE" \
@@ -85,9 +73,11 @@ jobs:
           )
 
           if [ -z "$PROJECT_ROOT" ]; then
-            echo "::error::Android project root could not be detected."
+            echo "::error::Android project root not found."
+
             echo "=== PROJECT FILES ==="
             find "$BASE" -maxdepth 6 -type f | sort
+
             exit 1
           fi
 
@@ -98,60 +88,24 @@ jobs:
 
           echo "=== PROJECT ROOT ==="
           pwd
+
+          echo "=== PROJECT CONTENT ==="
           ls -la
 
-          if [ ! -f "settings.gradle.kts" ]; then
-            echo "Creating settings.gradle.kts"
-
-            cat > settings.gradle.kts <<'EOF'
-          pluginManagement {
-              repositories {
-                  google()
-                  mavenCentral()
-                  gradlePluginPortal()
-              }
-          }
-
-          dependencyResolutionManagement {
-              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
-              repositories {
-                  google()
-                  mavenCentral()
-              }
-          }
-
-          rootProject.name = "SmartAlert"
-          include(":app")
-          EOF
-          fi
-
-          if [ ! -f "build.gradle.kts" ]; then
-            echo "Creating build.gradle.kts"
-
-            cat > build.gradle.kts <<'EOF'
-          plugins {
-              alias(libs.plugins.android.application) apply false
-          }
-          EOF
-          fi
-
-          if [ ! -f "gradle.properties" ]; then
-            echo "Creating gradle.properties"
-
-            cat > gradle.properties <<'EOF'
-          org.gradle.jvmargs=-Xmx4g -Dfile.encoding=UTF-8
-          android.useAndroidX=true
-          android.nonTransitiveRClass=true
-          EOF
-          fi
-
-          echo "=== settings.gradle.kts ==="
+          echo "=== SETTINGS ==="
+          test -f settings.gradle.kts
           cat settings.gradle.kts
 
-          echo "=== build.gradle.kts ==="
+          echo "=== ROOT BUILD ==="
+          test -f build.gradle.kts
           cat build.gradle.kts
 
-          echo "=== gradle.properties ==="
+          echo "=== APP BUILD ==="
+          test -f app/build.gradle.kts
+          cat app/build.gradle.kts
+
+          echo "=== GRADLE PROPERTIES ==="
+          test -f gradle.properties
           cat gradle.properties
 
       - name: Set up JDK 17
@@ -163,12 +117,12 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Install Android SDK packages
+      - name: Install Android SDK
         shell: bash
         run: |
           set -euo pipefail
 
-          yes | sdkmanager --licenses >/dev/null || true
+          yes | sdkmanager --licenses >/dev/null 2>&1 || true
 
           sdkmanager --install \
             "platform-tools" \
@@ -180,7 +134,7 @@ jobs:
         with:
           gradle-version: "9.3.1"
 
-      - name: Verify Gradle project
+      - name: Verify Gradle
         shell: bash
         working-directory: ${{ env.PROJECT_ROOT }}
         run: |
@@ -194,10 +148,11 @@ jobs:
 
           echo "=== PROJECT ==="
           pwd
-          ls -la
 
           echo "=== GRADLE TASKS ==="
-          gradle tasks --stacktrace --no-daemon
+          gradle tasks \
+            --stacktrace \
+            --no-daemon
 
       - name: Build Debug APK
         shell: bash
@@ -211,7 +166,7 @@ jobs:
             --stacktrace \
             --no-daemon
 
-          echo "=== APK OUTPUT ==="
+          echo "=== APK FILES ==="
 
           find app/build/outputs/apk \
             -type f \
