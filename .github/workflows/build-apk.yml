@@ -1,4 +1,4 @@
-name: Build SmartAlert TEST APK
+name: Build Android APK
 
 on:
   workflow_dispatch:
@@ -15,168 +15,208 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Find ZIP
-        id: find_zip
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          echo "=== ZIP FILES ==="
-          find . -type f -iname "*.zip" -print
-
-          ZIP=$(find . -type f -iname "*.zip" -print -quit || true)
-
-          if [ -z "$ZIP" ]; then
-            echo "::error::No ZIP file found in repository."
-            exit 1
-          fi
-
-          echo "Found ZIP: $ZIP"
-          echo "zip_path=$ZIP" >> "$GITHUB_OUTPUT"
-
-      - name: Unzip project
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          rm -rf "$RUNNER_TEMP/smartalert-project"
-          mkdir -p "$RUNNER_TEMP/smartalert-project"
-
-          unzip -q "${{ steps.find_zip.outputs.zip_path }}" \
-            -d "$RUNNER_TEMP/smartalert-project"
-
-          echo "=== UNZIPPED PROJECT ==="
-          find "$RUNNER_TEMP/smartalert-project" \
-            -maxdepth 5 \
-            -type f \
-            | sort \
-            | head -300
-
-      - name: Prepare project
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          BASE="$RUNNER_TEMP/smartalert-project"
-          PROJECT_ROOT=""
-
-          echo "=== SEARCHING ANDROID PROJECT ==="
-
-          while IFS= read -r -d '' FILE; do
-            PROJECT_ROOT="$(dirname "$(dirname "$FILE")")"
-            break
-          done < <(
-            find "$BASE" \
-              -type f \
-              -path "*/app/build.gradle.kts" \
-              -print0
-          )
-
-          if [ -z "$PROJECT_ROOT" ]; then
-            echo "::error::Android project root not found."
-
-            echo "=== PROJECT FILES ==="
-            find "$BASE" -maxdepth 6 -type f | sort
-
-            exit 1
-          fi
-
-          echo "PROJECT_ROOT=$PROJECT_ROOT"
-          echo "PROJECT_ROOT=$PROJECT_ROOT" >> "$GITHUB_ENV"
-
-          cd "$PROJECT_ROOT"
-
-          echo "=== PROJECT ROOT ==="
-          pwd
-
-          echo "=== PROJECT CONTENT ==="
-          ls -la
-
-          echo "=== SETTINGS ==="
-          test -f settings.gradle.kts
-          cat settings.gradle.kts
-
-          echo "=== ROOT BUILD ==="
-          test -f build.gradle.kts
-          cat build.gradle.kts
-
-          echo "=== APP BUILD ==="
-          test -f app/build.gradle.kts
-          cat app/build.gradle.kts
-
-          echo "=== GRADLE PROPERTIES ==="
-          test -f gradle.properties
-          cat gradle.properties
-
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: "17"
+          java-version: '17'
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Install Android SDK
+      - name: Find ZIP
+        id: find_zip
         shell: bash
         run: |
-          set -euo pipefail
+          set -e
 
-          yes | sdkmanager --licenses >/dev/null 2>&1 || true
+          echo "=== SEARCHING ZIP ==="
 
-          sdkmanager --install \
-            "platform-tools" \
-            "platforms;android-35" \
-            "build-tools;36.0.0"
+          ZIP_FILE="$(find "$GITHUB_WORKSPACE" \
+            -type f \
+            -name "*.zip" \
+            -not -path "*/.git/*" \
+            | head -n 1)"
 
-      - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: "9.3.1"
+          if [ -z "$ZIP_FILE" ]; then
+            echo "ERROR: No ZIP file found."
+            exit 1
+          fi
 
-      - name: Verify Gradle
+          echo "ZIP_FILE=$ZIP_FILE" >> "$GITHUB_ENV"
+          echo "Found ZIP:"
+          echo "$ZIP_FILE"
+
+      - name: Unzip project
         shell: bash
-        working-directory: ${{ env.PROJECT_ROOT }}
         run: |
-          set -euo pipefail
+          set -e
 
-          echo "=== JAVA ==="
-          java -version
+          WORK_DIR="$RUNNER_TEMP/smartalert-project"
 
-          echo "=== GRADLE ==="
-          gradle --version
+          rm -rf "$WORK_DIR"
+          mkdir -p "$WORK_DIR"
 
-          echo "=== PROJECT ==="
-          pwd
+          echo "=== UNZIPPING PROJECT ==="
+          echo "ZIP: $ZIP_FILE"
+          echo "DEST: $WORK_DIR"
 
-          echo "=== GRADLE TASKS ==="
-          gradle tasks \
-            --stacktrace \
-            --no-daemon
+          unzip -q "$ZIP_FILE" -d "$WORK_DIR"
+
+          echo
+          echo "=== EXTRACTED FILES ==="
+          find "$WORK_DIR" -maxdepth 5 -type f | sort | head -300
+
+      - name: Find Android project root
+        shell: bash
+        run: |
+          set -e
+
+          WORK_DIR="$RUNNER_TEMP/smartalert-project"
+
+          echo "=== SEARCHING ANDROID PROJECT ==="
+
+          PROJECT_ROOT=""
+
+          while IFS= read -r SETTINGS_FILE; do
+            CANDIDATE="$(dirname "$SETTINGS_FILE")"
+
+            if [ -f "$CANDIDATE/app/build.gradle" ] || \
+               [ -f "$CANDIDATE/app/build.gradle.kts" ]; then
+
+              if [ -f "$CANDIDATE/gradlew" ]; then
+                PROJECT_ROOT="$CANDIDATE"
+                break
+              fi
+
+            fi
+          done < <(
+            find "$WORK_DIR" \
+              -type f \
+              \( \
+                -name "settings.gradle" \
+                -o \
+                -name "settings.gradle.kts" \
+              \) \
+              -not -path "*/build/*" \
+              | sort
+          )
+
+          if [ -z "$PROJECT_ROOT" ]; then
+            echo
+            echo "ERROR: Android project root not found."
+            echo
+            echo "The ZIP must contain an Android source project."
+            echo
+            echo "Expected structure:"
+            echo "  settings.gradle / settings.gradle.kts"
+            echo "  build.gradle / build.gradle.kts"
+            echo "  gradlew"
+            echo "  app/"
+            echo
+            echo "=== PROJECT FILES ==="
+            find "$WORK_DIR" -type f | sort
+            echo
+            exit 1
+          fi
+
+          echo
+          echo "=== ANDROID PROJECT ROOT ==="
+          echo "$PROJECT_ROOT"
+
+          echo
+          echo "=== PROJECT FILES ==="
+          ls -la "$PROJECT_ROOT"
+
+          echo
+          echo "=== APP DIRECTORY ==="
+          ls -la "$PROJECT_ROOT/app"
+
+          echo "PROJECT_ROOT=$PROJECT_ROOT" >> "$GITHUB_ENV"
+
+      - name: Verify Gradle project
+        shell: bash
+        run: |
+          set -e
+
+          cd "$PROJECT_ROOT"
+
+          echo "=== VERIFY GRADLE PROJECT ==="
+          echo "PWD=$(pwd)"
+
+          if [ ! -f "gradlew" ]; then
+            echo "ERROR: gradlew not found."
+            exit 1
+          fi
+
+          if [ ! -f "settings.gradle" ] && \
+             [ ! -f "settings.gradle.kts" ]; then
+            echo "ERROR: settings.gradle(.kts) not found."
+            exit 1
+          fi
+
+          if [ ! -d "app" ]; then
+            echo "ERROR: app directory not found."
+            exit 1
+          fi
+
+          chmod +x gradlew
+
+          ./gradlew --version
 
       - name: Build Debug APK
         shell: bash
-        working-directory: ${{ env.PROJECT_ROOT }}
         run: |
-          set -euo pipefail
+          set -e
+
+          cd "$PROJECT_ROOT"
 
           echo "=== BUILD DEBUG APK ==="
 
-          gradle :app:assembleDebug \
-            --stacktrace \
-            --no-daemon
+          ./gradlew assembleDebug --stacktrace
 
-          echo "=== APK FILES ==="
+      - name: Locate APK
+        id: apk
+        shell: bash
+        run: |
+          set -e
 
-          find app/build/outputs/apk \
+          echo "=== SEARCHING BUILT APK ==="
+
+          APK_FILE="$(find "$PROJECT_ROOT/app/build/outputs/apk" \
             -type f \
             -name "*.apk" \
-            -print
+            | head -n 1)"
+
+          if [ -z "$APK_FILE" ]; then
+            echo "ERROR: APK was not generated."
+            exit 1
+          fi
+
+          echo "APK_FILE=$APK_FILE" >> "$GITHUB_ENV"
+
+          echo
+          echo "=== APK FOUND ==="
+          ls -lh "$APK_FILE"
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: SmartAlert-test-debug
-          path: ${{ env.PROJECT_ROOT }}/app/build/outputs/apk/debug/app-debug.apk
+          name: smartalert-debug-apk
+          path: ${{ env.APK_FILE }}
           if-no-files-found: error
-          retention-days: 14
+
+      - name: Build summary
+        shell: bash
+        run: |
+          echo "========================================"
+          echo "BUILD SUCCESS"
+          echo "========================================"
+          echo
+          echo "Project:"
+          echo "$PROJECT_ROOT"
+          echo
+          echo "APK:"
+          echo "$APK_FILE"
+          echo
+          ls -lh "$APK_FILE"
