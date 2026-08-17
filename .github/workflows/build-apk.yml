@@ -40,7 +40,6 @@ jobs:
 
           if [ -z "$ZIP" ]; then
             echo "::error::SmartAlert project ZIP not found."
-            echo "ZIP files found:"
             find . -type f -name "*.zip" -print || true
             exit 1
           fi
@@ -60,7 +59,11 @@ jobs:
             -d "$RUNNER_TEMP/smartalert-project"
 
           echo "=== ZIP CONTENT ==="
-          find "$RUNNER_TEMP/smartalert-project" -maxdepth 4 -type f | sort | head -300
+          find "$RUNNER_TEMP/smartalert-project" \
+            -maxdepth 5 \
+            -type f \
+            | sort \
+            | head -300
 
       - name: Prepare project
         shell: bash
@@ -69,16 +72,22 @@ jobs:
 
           BASE="$RUNNER_TEMP/smartalert-project"
 
-          PROJECT_ROOT=$(find "$BASE" \
-            -type f \
-            -path "*/app/build.gradle.kts" \
-            -print -quit \
-            | xargs -r dirname \
-            | xargs -r dirname)
+          PROJECT_ROOT=""
 
-          if [ -z "$PROJECT_ROOT" ] || [ ! -f "$PROJECT_ROOT/app/build.gradle.kts" ]; then
+          while IFS= read -r -d '' APP_GRADLE; do
+            PROJECT_ROOT="$(dirname "$(dirname "$APP_GRADLE")")"
+            break
+          done < <(
+            find "$BASE" \
+              -type f \
+              -path "*/app/build.gradle.kts" \
+              -print0
+          )
+
+          if [ -z "$PROJECT_ROOT" ]; then
             echo "::error::Android project root could not be detected."
-            find "$BASE" -maxdepth 6 -type f | sort | head -500
+            echo "=== PROJECT FILES ==="
+            find "$BASE" -maxdepth 6 -type f | sort
             exit 1
           fi
 
@@ -92,52 +101,57 @@ jobs:
           ls -la
 
           if [ ! -f "settings.gradle.kts" ]; then
+            echo "Creating settings.gradle.kts"
+
             cat > settings.gradle.kts <<'EOF'
-pluginManagement {
-    repositories {
-        google()
-        mavenCentral()
-        gradlePluginPortal()
-    }
-}
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
 
-dependencyResolutionManagement {
-    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
-    repositories {
-        google()
-        mavenCentral()
-    }
-}
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
 
-rootProject.name = "SmartAlert"
-include(":app")
-EOF
+          rootProject.name = "SmartAlert"
+          include(":app")
+          EOF
           fi
 
           if [ ! -f "build.gradle.kts" ]; then
+            echo "Creating build.gradle.kts"
+
             cat > build.gradle.kts <<'EOF'
-plugins {
-    alias(libs.plugins.android.application) apply false
-}
-EOF
+          plugins {
+              alias(libs.plugins.android.application) apply false
+          }
+          EOF
           fi
 
           if [ ! -f "gradle.properties" ]; then
+            echo "Creating gradle.properties"
+
             cat > gradle.properties <<'EOF'
-org.gradle.jvmargs=-Xmx4g -Dfile.encoding=UTF-8
-android.useAndroidX=true
-android.nonTransitiveRClass=true
-EOF
+          org.gradle.jvmargs=-Xmx4g -Dfile.encoding=UTF-8
+          android.useAndroidX=true
+          android.nonTransitiveRClass=true
+          EOF
           fi
 
-          echo "=== BUILD FILES ==="
-          echo "--- settings.gradle.kts ---"
+          echo "=== settings.gradle.kts ==="
           cat settings.gradle.kts
 
-          echo "--- build.gradle.kts ---"
+          echo "=== build.gradle.kts ==="
           cat build.gradle.kts
 
-          echo "--- gradle.properties ---"
+          echo "=== gradle.properties ==="
           cat gradle.properties
 
       - name: Set up JDK 17
@@ -153,6 +167,8 @@ EOF
         shell: bash
         run: |
           set -euo pipefail
+
+          yes | sdkmanager --licenses >/dev/null || true
 
           sdkmanager --install \
             "platform-tools" \
@@ -170,13 +186,17 @@ EOF
         run: |
           set -euo pipefail
 
-          echo "=== Java ==="
+          echo "=== JAVA ==="
           java -version
 
-          echo "=== Gradle ==="
+          echo "=== GRADLE ==="
           gradle --version
 
-          echo "=== Gradle tasks ==="
+          echo "=== PROJECT ==="
+          pwd
+          ls -la
+
+          echo "=== GRADLE TASKS ==="
           gradle tasks --stacktrace --no-daemon
 
       - name: Build Debug APK
